@@ -59,19 +59,14 @@
     "publicIPAddressName": "[concat(variables('namingInfix'), 'pip')]",
     "publicIPAddressNameBastion": "[concat(variables('namingInfix'), 'pip-bastion')]",
     "subnetName": "[concat(variables('namingInfix'), 'subnet')]",
-    "vnetID": "[resourceId('Microsoft.Network/virtualNetworks',variables('virtualNetworkName'))]",
-    "subnetRef": "[concat(variables('vnetID'),'/subnets/',variables('subnetName'))]",
     "loadBalancerName": "[concat(variables('namingInfix'), '-publiclb')]",
-    "iloadBalancerName": "[concat(variables('namingInfix'), '-internallb')]",
     "publicIPAddressID": "[resourceId('Microsoft.Network/publicIPAddresses',variables('publicIPAddressName'))]",
     "publicIPAddressBastionID": "[resourceId('Microsoft.Network/publicIPAddresses',variables('publicIPAddressNameBastion'))]",
     "lbID": "[resourceId('Microsoft.Network/loadBalancers',variables('loadBalancerName'))]",
-    "ilbID": "[resourceId('Microsoft.Network/loadBalancers',variables('iloadBalancerName'))]",
     "bePoolName": "[concat(variables('namingInfix'), 'bepool')]",
     "nicName": "[concat(variables('namingInfix'), 'nic')]",
     "ipConfigName": "[concat(variables('namingInfix'), 'ipconfig')]",
     "frontEndIPConfigID": "[concat(variables('lbID'),'/frontendIPConfigurations/loadBalancerFrontEnd')]",
-    "ifrontEndIPConfigID": "[concat(variables('ilbID'),'/frontendIPConfigurations/loadBalancerFrontEnd')]",
     "computeApiVersion": "2019-03-01",
     "networkApiVersion": "2018-07-01",
     "osType": {
@@ -89,6 +84,25 @@
       "name": "[variables('networkSecurityGroupsName')]",
       "location": "[resourceGroup().location]",
       "properties": {
+        "securityRules": [
+          {
+            "name": "Port_3128",
+            "properties": {
+              "protocol": "*",
+              "sourcePortRange": "*",
+              "destinationPortRange": "3128",
+              "sourceAddressPrefix": "<YOUR ALLOWED SOURCE IP>",
+              "destinationAddressPrefix": "*",
+              "access": "Allow",
+              "priority": 100,
+              "direction": "Inbound",
+              "sourcePortRanges": [],
+              "destinationPortRanges": [],
+              "sourceAddressPrefixes": [],
+              "destinationAddressPrefixes": []
+            }
+          }
+        ]
       }
     },
     {
@@ -181,10 +195,37 @@
             "name": "[variables('bePoolName')]"
           }
         ],
-
         "loadBalancingRules": [
+          {
+            "properties": {
+              "frontendIPConfiguration": {
+                "id": "[variables('frontEndIPConfigID')]"
+              },
+              "backendAddressPool": {
+                "id": "[concat(resourceId('Microsoft.Network/loadBalancers', variables('loadBalancerName')), '/backendAddressPools/', variables('bePoolName'))]"
+              },
+              "probe": {
+                "id": "[concat(resourceId('Microsoft.Network/loadBalancers', variables('loadBalancerName')), '/probes/squidlbprobe')]"
+              },
+              "protocol": "Tcp",
+              "frontendPort": 3128,
+              "backendPort": 3128,
+              "idleTimeoutInMinutes": 15,
+              "disableOutboundSnat": "true"
+            },
+            "name": "squidlbrule"
+          }
         ],
         "probes": [
+          {
+            "properties": {
+              "protocol": "Tcp",
+              "port": 3128,
+              "intervalInSeconds": 15,
+              "numberOfProbes": 2
+            },
+            "name": "squidlbprobe"
+          }
         ],
         "outboundRules": [
           {
@@ -203,66 +244,6 @@
                 }
               ]
             }
-          }
-        ]
-      }
-    },
-    {
-      "type": "Microsoft.Network/loadBalancers",
-      "name": "[variables('iloadBalancerName')]",
-      "location": "[resourceGroup().location]",
-      "apiVersion": "[variables('networkApiVersion')]",
-      "dependsOn": [
-        "[concat('Microsoft.Network/virtualNetworks/', variables('virtualNetworkName'))]"
-      ],
-      "sku": {
-        "name": "Standard"
-      },
-      "properties": {
-        "frontendIPConfigurations": [
-          {
-            "name": "LoadBalancerFrontEnd",
-            "properties": {
-              "subnet": {
-                "id": "[variables('subnetRef')]"
-              }
-            }
-          }
-        ],
-        "backendAddressPools": [
-          {
-            "name": "[variables('bePoolName')]"
-          }
-        ],
-        "loadBalancingRules": [
-          {
-            "properties": {
-              "frontendIPConfiguration": {
-                "id": "[variables('ifrontEndIPConfigID')]"
-              },
-              "backendAddressPool": {
-                "id": "[concat(resourceId('Microsoft.Network/loadBalancers', variables('iloadBalancerName')), '/backendAddressPools/', variables('bePoolName'))]"
-              },
-              "probe": {
-                "id": "[concat(resourceId('Microsoft.Network/loadBalancers', variables('iloadBalancerName')), '/probes/squidlbprobe')]"
-              },
-              "protocol": "Tcp",
-              "frontendPort": 3128,
-              "backendPort": 3128,
-              "idleTimeoutInMinutes": 15
-            },
-            "name": "squidlbrule"
-          }
-        ],
-        "probes": [
-          {
-            "properties": {
-              "protocol": "Tcp",
-              "port": 3128,
-              "intervalInSeconds": 15,
-              "numberOfProbes": 2
-            },
-            "name": "squidlbprobe"
           }
         ]
       }
@@ -302,7 +283,7 @@
             "computerNamePrefix": "[variables('namingInfix')]",
             "adminUsername": "[parameters('adminUsername')]",
             "adminPassword": "[parameters('adminPassword')]",
-            "customData": "[base64('#cloud-config\n\npackage_upgrade: true\npackages:\n  - squid\nwrite_files:\n  - owner: root:root\n    path: /etc/squid/squid.conf\n    content: |\n      acl whitelist dstdomain \"/etc/squid/sites.whitelist.txt\"\n      http_access allow whitelist\n      http_access deny all\n      http_port 3128\nruncmd:\n  - sudo curl \"https://{sample}.blob.core.windows.net/mycontainer/sites.whitelist.txt?st=2019-09-10T14%3A04%3A33Z&se=2019-09-11T14%3A04%3A33Z&sp=rl&sv=2018-03-28&sr=b&sig=*********\" -o /etc/squid/sites.whitelist.txt\n  - sudo squid -k reconfigure')]"
+            "customData": "[base64('#cloud-config\n\npackage_upgrade: true\npackages:\n  - squid\nwrite_files:\n  - owner: root:root\n    path: /etc/squid/squid.conf\n    content: |\n      acl whitelist dstdomain \"/etc/squid/sites.whitelist.txt\"\n      http_access allow whitelist\n      http_access deny all\n      http_port 3128\nruncmd:\n  - sudo curl \"<YOUR WHITE LIST URL>\" -o /etc/squid/sites.whitelist.txt\n  - sudo squid -k reconfigure')]"
           },
           "networkProfile": {
             "networkInterfaceConfigurations": [
@@ -320,9 +301,6 @@
                         "loadBalancerBackendAddressPools": [
                           {
                             "id": "[concat('/subscriptions/', subscription().subscriptionId,'/resourceGroups/', resourceGroup().name, '/providers/Microsoft.Network/loadBalancers/', variables('loadBalancerName'), '/backendAddressPools/', variables('bePoolName'))]"
-                          },
-                          {
-                            "id": "[concat('/subscriptions/', subscription().subscriptionId,'/resourceGroups/', resourceGroup().name, '/providers/Microsoft.Network/loadBalancers/', variables('iloadBalancerName'), '/backendAddressPools/', variables('bePoolName'))]"
                           }
                         ]
                       }
